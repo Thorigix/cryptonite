@@ -1,13 +1,13 @@
 import { useMainWallet } from '@/contexts/MainWalletContext';
 import { useNfcStatus } from '@/hooks/useNfcStatus';
-import { withdrawFromYieldPool } from '@/utils/monad';
+import { sweepFromVault } from '@/utils/monad';
 import { startNfcBroadcast, startNfcRead, stopNfc } from '@/utils/nfc';
 import type { PaymentStep } from '@/utils/payment';
 import { executePayment } from '@/utils/payment';
 import { getPrivateKey } from '@/utils/wallet';
-import { useWeb3Modal } from '@web3modal/wagmi-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
+import React, { useCallback, useRef, useState } from 'react';
 import {
 	ActivityIndicator,
 	Alert,
@@ -23,7 +23,6 @@ import {
 import 'react-native-get-random-values';
 import QRCode from 'react-native-qrcode-svg';
 import type { Address } from 'viem';
-import { useAccount, useDisconnect } from 'wagmi';
 
 // ─── Types ───
 type PaymentMode = 'idle' | 'receive' | 'send' | 'processing' | 'done';
@@ -31,16 +30,6 @@ type PaymentMode = 'idle' | 'receive' | 'send' | 'processing' | 'done';
 export default function PaymentScreen() {
 	const { mainWalletAddress, connectMainWallet, disconnectMainWallet } = useMainWallet();
 	const { nfcEnabled, nfcSupported, openNfcSettings } = useNfcStatus();
-	const { open } = useWeb3Modal();
-	const { address: wagmiAddress, isConnected } = useAccount();
-	const { disconnect: wagmiDisconnect } = useDisconnect();
-
-	// wagmi hesabı değiştiğinde MainWalletContext'i güncelle
-	useEffect(() => {
-		if (isConnected && wagmiAddress) {
-			connectMainWallet(wagmiAddress as Address);
-		}
-	}, [isConnected, wagmiAddress, connectMainWallet]);
 
 	// ─── State ───
 	const [mode, setMode] = useState<PaymentMode>('idle');
@@ -62,15 +51,14 @@ export default function PaymentScreen() {
 		setAddressInput(mainWalletAddress ?? '');
 	}, [mainWalletAddress]);
 
-	const handleMetaMaskConnect = useCallback(async () => {
-		try {
-			setShowConnectModal(false);
-			await open();
-		} catch (e) {
-			console.warn('⚠️ [Web3Modal] Bağlantı başarısız:', e);
-			Alert.alert('Hata', 'Cüzdan bağlantısı kurulamadı. Manuel adres girin.');
+	const handlePasteAddress = useCallback(async () => {
+		const text = await Clipboard.getStringAsync();
+		if (text && /^0x[a-fA-F0-9]{40}$/.test(text.trim())) {
+			setAddressInput(text.trim());
+		} else {
+			Alert.alert('Geçersiz Pano', 'Panodaki metin geçerli bir Ethereum adresi değil.');
 		}
-	}, [open]);
+	}, []);
 
 	const handleSaveAddress = useCallback(async () => {
 		const addr = addressInput.trim();
@@ -84,10 +72,9 @@ export default function PaymentScreen() {
 	}, [addressInput, connectMainWallet]);
 
 	const handleDisconnect = useCallback(async () => {
-		wagmiDisconnect();
 		await disconnectMainWallet();
 		setShowConnectModal(false);
-	}, [disconnectMainWallet, wagmiDisconnect]);
+	}, [disconnectMainWallet]);
 
 	// ─── Ödeme Al (Receive) ───
 	const handleReceive = useCallback(async () => {
@@ -199,8 +186,9 @@ export default function PaymentScreen() {
 				});
 			};
 
-			const onWithdrawFromYield = async (amount: number) => {
-				const result = await withdrawFromYieldPool(amount);
+			const onWithdrawFromYield = async (_amount: number) => {
+				if (!mainWalletAddress || !privateKey) return;
+				const result = await sweepFromVault(privateKey, mainWalletAddress);
 				if (result.success) {
 					setYieldBalance(0);
 				}
@@ -394,43 +382,35 @@ export default function PaymentScreen() {
 			<Modal visible={showConnectModal} transparent animationType="slide">
 				<View style={styles.modalOverlay}>
 					<View style={styles.modalContent}>
-						<Text style={styles.modalTitle}>Ana Cüzdan Bağla</Text>
-						<Text style={styles.modalSubtitle}>MetaMask ile veya manuel adres girin</Text>
+						<Text style={styles.modalTitle}>Ana Cüzdanı Belirle</Text>
+						<Text style={styles.modalSubtitle}>Kriptoları çekeceğiniz adresi girin</Text>
 
-						{/* Cüzdan Bağla (Web3Modal) */}
-						<TouchableOpacity
-							style={styles.metaMaskButton}
-							onPress={handleMetaMaskConnect}
-							activeOpacity={0.7}
-						>
-							<Text style={styles.metaMaskButtonIcon}>🦊</Text>
-							<Text style={styles.metaMaskButtonText}>Cüzdan Bağla</Text>
-						</TouchableOpacity>
-
-						<View style={styles.modalDivider}>
-							<View style={styles.modalDividerLine} />
-							<Text style={styles.modalDividerText}>veya</Text>
-							<View style={styles.modalDividerLine} />
+						<View style={styles.inputContainer}>
+							<TextInput
+								style={styles.addressInputField}
+								placeholder="0x..."
+								placeholderTextColor="#555"
+								value={addressInput}
+								onChangeText={setAddressInput}
+								autoCapitalize="none"
+								autoCorrect={false}
+							/>
+							<TouchableOpacity
+								style={styles.pasteButton}
+								onPress={handlePasteAddress}
+								activeOpacity={0.7}
+							>
+								<Text style={styles.pasteButtonText}>📋 Yapıştır</Text>
+							</TouchableOpacity>
 						</View>
 
-						{/* Manuel Adres Girişi */}
-						<TextInput
-							style={styles.addressInputField}
-							placeholder="0x..."
-							placeholderTextColor="#555"
-							value={addressInput}
-							onChangeText={setAddressInput}
-							autoCapitalize="none"
-							autoCorrect={false}
-						/>
-
 						<TouchableOpacity style={styles.modalSaveButton} onPress={handleSaveAddress} activeOpacity={0.7}>
-							<Text style={styles.modalSaveButtonText}>Manuel Bağlan</Text>
+							<Text style={styles.modalSaveButtonText}>Değişiklikleri Kaydet</Text>
 						</TouchableOpacity>
 
 						{mainWalletAddress && (
 							<TouchableOpacity style={styles.modalDisconnectButton} onPress={handleDisconnect} activeOpacity={0.7}>
-								<Text style={styles.modalDisconnectText}>Bağlantıyı Kes</Text>
+								<Text style={styles.modalDisconnectText}>Cüzdanı Kaldır</Text>
 							</TouchableOpacity>
 						)}
 
@@ -812,49 +792,36 @@ const styles = StyleSheet.create({
 		textAlign: 'center',
 		marginBottom: 20,
 	},
+	inputContainer: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 8,
+		marginBottom: 20,
+	},
 	addressInputField: {
-		backgroundColor: '#0A0A0F',
+		flex: 1,
+		backgroundColor: 'rgba(255,255,255,0.05)',
+		borderRadius: 12,
 		borderWidth: 1,
 		borderColor: '#2A2A3E',
-		borderRadius: 12,
-		color: '#FFFFFF',
+		color: '#FFF',
 		fontSize: 14,
 		fontFamily: 'monospace',
 		padding: 14,
-		marginBottom: 16,
 	},
-	metaMaskButton: {
-		flexDirection: 'row',
+	pasteButton: {
+		backgroundColor: 'rgba(131,110,249,0.15)',
+		borderWidth: 1,
+		borderColor: 'rgba(131,110,249,0.3)',
+		borderRadius: 12,
+		paddingVertical: 14,
+		paddingHorizontal: 16,
 		alignItems: 'center',
 		justifyContent: 'center',
-		gap: 10,
-		backgroundColor: '#F6851B',
-		borderRadius: 14,
-		paddingVertical: 15,
-		marginBottom: 16,
 	},
-	metaMaskButtonIcon: {
-		fontSize: 20,
-	},
-	metaMaskButtonText: {
-		color: '#FFFFFF',
-		fontSize: 16,
-		fontWeight: '700',
-	},
-	modalDivider: {
-		flexDirection: 'row',
-		alignItems: 'center',
-		gap: 12,
-		marginBottom: 16,
-	},
-	modalDividerLine: {
-		flex: 1,
-		height: 1,
-		backgroundColor: '#2A2A3E',
-	},
-	modalDividerText: {
-		color: '#555',
-		fontSize: 12,
+	pasteButtonText: {
+		color: '#836EF9',
+		fontSize: 14,
 		fontWeight: '600',
 	},
 	modalSaveButton: {

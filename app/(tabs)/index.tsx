@@ -1,5 +1,5 @@
 import { useMainWallet } from '@/contexts/MainWalletContext';
-import { depositToYieldPool, getMonBalance, withdrawFromYieldPool } from '@/utils/monad';
+import { depositToYieldPool, getMonBalance, getYieldBalance, sweepFromVault } from '@/utils/monad';
 import type { PriceData } from '@/utils/price';
 import { calculateMonForTRY } from '@/utils/price';
 import { getOrCreateWallet } from '@/utils/wallet';
@@ -14,11 +14,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { Address } from 'viem';
+import type { Address, Hex } from 'viem';
 
 export default function WalletScreen() {
   const { mainWalletAddress } = useMainWallet();
   const [address, setAddress] = useState<Address | null>(null);
+  const [privateKey, setPrivateKey] = useState<Hex | null>(null);
   const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -49,8 +50,14 @@ export default function WalletScreen() {
       setError(null);
       const wallet = await getOrCreateWallet();
       setAddress(wallet.address);
+      setPrivateKey(wallet.privateKey);
       const bal = await getMonBalance(wallet.address);
       setBalance(bal);
+      // Kontrat yield bakiyesini sorgula
+      try {
+        const yBal = await getYieldBalance(wallet.address);
+        setYieldBalance(parseFloat(yBal));
+      } catch { /* yield vault henüz deploy edilmemiş olabilir */ }
       await fetchPrice();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Bilinmeyen hata';
@@ -89,9 +96,13 @@ export default function WalletScreen() {
       Alert.alert('Yetersiz Bakiye', 'Cüzdanınızda yatırılacak MON yok.');
       return;
     }
+    if (!privateKey) {
+      Alert.alert('Hata', 'Burner cüzdan bulunamadı.');
+      return;
+    }
     setDepositing(true);
     try {
-      const result = await depositToYieldPool(walletBal);
+      const result = await depositToYieldPool(privateKey, walletBal);
       if (result.success) {
         setYieldBalance((prev) => prev + result.amount);
         setBalance('0');
@@ -102,16 +113,20 @@ export default function WalletScreen() {
     } finally {
       setDepositing(false);
     }
-  }, [balance]);
+  }, [balance, privateKey]);
 
   const handleWithdraw = useCallback(async () => {
     if (yieldBalance <= 0) {
       Alert.alert('Yetersiz Bakiye', 'Nema havuzunda çekilecek MON yok.');
       return;
     }
+    if (!privateKey || !mainWalletAddress) {
+      Alert.alert('Hata', 'Cüzdan bilgileri eksik.');
+      return;
+    }
     setWithdrawing(true);
     try {
-      const result = await withdrawFromYieldPool(yieldBalance);
+      const result = await sweepFromVault(privateKey, mainWalletAddress);
       if (result.success) {
         const currentBal = parseFloat(balance ?? '0');
         setBalance((currentBal + result.amount).toString());
@@ -123,7 +138,7 @@ export default function WalletScreen() {
     } finally {
       setWithdrawing(false);
     }
-  }, [yieldBalance, balance]);
+  }, [yieldBalance, balance, privateKey, mainWalletAddress]);
 
   useEffect(() => {
     initWallet();

@@ -2,6 +2,7 @@ import {
   createPublicClient,
   defineChain,
   formatEther,
+  getContract,
   http,
   parseEther,
   createWalletClient as viemCreateWalletClient,
@@ -149,29 +150,253 @@ export async function sweepBalance(
   return hash;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// MonadYieldVault Contract Integration
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * MonadYieldVault kontrat adresi.
+ * Deploy edildikten sonra bu adresi güncelleyin.
+ */
+export const MONAD_YIELD_VAULT_ADDRESS: Address =
+  '0x36509F86A748b413a82e510Afc580974cC3F5151'; // TODO: Deploy sonrası güncelle
+
+/**
+ * MonadYieldVault Kontrat ABI'si
+ */
+export const MONAD_YIELD_VAULT_ABI = [
+  // ─── deposit ───
+  {
+    type: 'function',
+    name: 'deposit',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'payable',
+  },
+  // ─── getBalanceWithYield ───
+  {
+    type: 'function',
+    name: 'getBalanceWithYield',
+    inputs: [{ name: 'user', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  // ─── executePayment ───
+  {
+    type: 'function',
+    name: 'executePayment',
+    inputs: [
+      { name: 'target', type: 'address', internalType: 'address payable' },
+      { name: 'amount', type: 'uint256', internalType: 'uint256' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  // ─── sweep ───
+  {
+    type: 'function',
+    name: 'sweep',
+    inputs: [
+      { name: 'mainWallet', type: 'address', internalType: 'address payable' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  // ─── deposits mapping ───
+  {
+    type: 'function',
+    name: 'deposits',
+    inputs: [{ name: '', type: 'address', internalType: 'address' }],
+    outputs: [
+      { name: 'amount', type: 'uint256', internalType: 'uint256' },
+      { name: 'depositTime', type: 'uint256', internalType: 'uint256' },
+    ],
+    stateMutability: 'view',
+  },
+  // ─── getContractBalance ───
+  {
+    type: 'function',
+    name: 'getContractBalance',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  // ─── Events ───
+  {
+    type: 'event',
+    name: 'Deposit',
+    inputs: [
+      { name: 'user', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'amount', type: 'uint256', indexed: false, internalType: 'uint256' },
+      { name: 'timestamp', type: 'uint256', indexed: false, internalType: 'uint256' },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'Payment',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'to', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'amount', type: 'uint256', indexed: false, internalType: 'uint256' },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'Sweep',
+    inputs: [
+      { name: 'user', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'mainWallet', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'amount', type: 'uint256', indexed: false, internalType: 'uint256' },
+    ],
+  },
+  // ─── receive ───
+  {
+    type: 'receive',
+    stateMutability: 'payable',
+  },
+] as const;
+
+/**
+ * Read-only kontrat instance oluşturur (publicClient ile).
+ */
+export function getYieldVaultReadContract() {
+  return getContract({
+    address: MONAD_YIELD_VAULT_ADDRESS,
+    abi: MONAD_YIELD_VAULT_ABI,
+    client: publicClient,
+  });
+}
+
+/**
+ * Write-capable kontrat instance oluşturur (walletClient ile).
+ */
+export function getYieldVaultWriteContract(privateKey: Hex) {
+  const walletClient = createBurnerWalletClient(privateKey);
+  return getContract({
+    address: MONAD_YIELD_VAULT_ADDRESS,
+    abi: MONAD_YIELD_VAULT_ABI,
+    client: { public: publicClient, wallet: walletClient },
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Kontrat Fonksiyonları
+// ═══════════════════════════════════════════════════════════════
+
 export interface YieldResult {
   success: boolean;
   amount: number;
+  txHash?: string;
 }
 
 /**
- * Mock: MON'u Nema (yield) havuzuna yatırır.
- * Gerçek kontrat yerine 2 saniyelik delay ile simüle eder.
+ * MON'u YieldVault kontratına yatırır.
+ * Burner wallet'tan kontrata deposit() çağrısı yapar.
  */
-export async function depositToYieldPool(amount: number): Promise<YieldResult> {
-  console.log(`📥 [Yield] ${amount.toFixed(4)} MON havuza yatırılıyor...`);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  console.log(`✅ [Yield] ${amount.toFixed(4)} MON başarıyla havuza yatırıldı`);
-  return { success: true, amount };
+export async function depositToYieldPool(
+  privateKey: Hex,
+  amount: number
+): Promise<YieldResult> {
+  console.log(`📥 [Yield] ${amount.toFixed(4)} MON kontrata yatırılıyor...`);
+
+  try {
+    const contract = getYieldVaultWriteContract(privateKey);
+    const account = privateKeyToAccount(privateKey);
+    const value = parseEther(amount.toString());
+
+    const hash = await contract.write.deposit({
+      value,
+      account,
+    });
+
+    await publicClient.waitForTransactionReceipt({ hash });
+    console.log(`✅ [Yield] ${amount.toFixed(4)} MON başarıyla kontrata yatırıldı. TX: ${hash}`);
+
+    return { success: true, amount, txHash: hash };
+  } catch (error) {
+    console.error('❌ [Yield] Deposit hatası:', error);
+    return { success: false, amount };
+  }
 }
 
 /**
- * Mock: Nema (yield) havuzundan MON çeker.
- * Gerçek kontrat yerine 2 saniyelik delay ile simüle eder.
+ * Kontrat üzerinden yield dahil bakiyeyi sorgular.
+ * getBalanceWithYield(address) view fonksiyonunu çağırır.
  */
-export async function withdrawFromYieldPool(amount: number): Promise<YieldResult> {
-  console.log(`📤 [Yield] ${amount.toFixed(4)} MON havuzdan çekiliyor...`);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  console.log(`✅ [Yield] ${amount.toFixed(4)} MON başarıyla havuzdan çekildi`);
-  return { success: true, amount };
+export async function getYieldBalance(userAddress: Address): Promise<string> {
+  try {
+    const contract = getYieldVaultReadContract();
+    const balanceWei = await contract.read.getBalanceWithYield([userAddress]);
+    return formatEther(balanceWei);
+  } catch (error) {
+    console.error('❌ [Yield] Balance sorgu hatası:', error);
+    return '0';
+  }
+}
+
+/**
+ * Kontrat üzerinden belirli bir tutarı hedef adrese ödeme yapar.
+ * executePayment(target, amount) fonksiyonunu çağırır.
+ */
+export async function executeContractPayment(
+  privateKey: Hex,
+  targetAddress: Address,
+  amountMon: number
+): Promise<YieldResult> {
+  console.log(`💳 [Vault] ${amountMon.toFixed(4)} MON → ${targetAddress} ödeme yapılıyor...`);
+
+  try {
+    const contract = getYieldVaultWriteContract(privateKey);
+    const account = privateKeyToAccount(privateKey);
+    const value = parseEther(amountMon.toString());
+
+    const hash = await contract.write.executePayment([targetAddress, value], {
+      account,
+    });
+
+    await publicClient.waitForTransactionReceipt({ hash });
+    console.log(`✅ [Vault] Ödeme tamamlandı. TX: ${hash}`);
+
+    return { success: true, amount: amountMon, txHash: hash };
+  } catch (error) {
+    console.error('❌ [Vault] Payment hatası:', error);
+    return { success: false, amount: amountMon };
+  }
+}
+
+/**
+ * Kontrat üzerindeki tüm bakiyeyi (yield dahil) ana cüzdana süpürür.
+ * sweep(mainWallet) fonksiyonunu çağırır.
+ */
+export async function sweepFromVault(
+  privateKey: Hex,
+  mainWalletAddress: Address
+): Promise<YieldResult> {
+  console.log(`🧹 [Vault] Tüm bakiye → ${mainWalletAddress} süpürülüyor...`);
+
+  try {
+    const contract = getYieldVaultWriteContract(privateKey);
+    const account = privateKeyToAccount(privateKey);
+
+    // Önce bakiyeyi kontrol et
+    const balanceWei = await getYieldVaultReadContract().read.getBalanceWithYield([account.address]);
+    const balanceFormatted = parseFloat(formatEther(balanceWei));
+
+    if (balanceFormatted <= 0) {
+      console.log('⚠️ [Vault] Kontratta bakiye yok, sweep atlanıyor');
+      return { success: true, amount: 0 };
+    }
+
+    const hash = await contract.write.sweep([mainWalletAddress], {
+      account,
+    });
+
+    await publicClient.waitForTransactionReceipt({ hash });
+    console.log(`✅ [Vault] Sweep tamamlandı: ${balanceFormatted.toFixed(4)} MON. TX: ${hash}`);
+
+    return { success: true, amount: balanceFormatted, txHash: hash };
+  } catch (error) {
+    console.error('❌ [Vault] Sweep hatası:', error);
+    return { success: false, amount: 0 };
+  }
 }
