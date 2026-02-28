@@ -1,4 +1,5 @@
-import { getMonBalance } from '@/utils/monad';
+import { depositToYieldPool, getMonBalance, withdrawFromYieldPool } from '@/utils/monad';
+import { calculateMonForTRY } from '@/utils/price';
 import { getOrCreateWallet } from '@/utils/wallet';
 import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useState } from 'react';
@@ -21,6 +22,15 @@ export default function WalletScreen() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Fiyat state'leri
+  const [monForFiftyTL, setMonForFiftyTL] = useState<number | null>(null);
+  const [priceIsFallback, setPriceIsFallback] = useState(false);
+
+  // Nema (Yield) state'leri
+  const [yieldBalance, setYieldBalance] = useState(0);
+  const [depositing, setDepositing] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
+
   const initWallet = useCallback(async () => {
     try {
       setError(null);
@@ -28,6 +38,15 @@ export default function WalletScreen() {
       setAddress(wallet.address);
       const bal = await getMonBalance(wallet.address);
       setBalance(bal);
+
+      // Fiyat bilgisini çek
+      try {
+        const { monAmount, priceData } = await calculateMonForTRY(50);
+        setMonForFiftyTL(monAmount);
+        setPriceIsFallback(priceData.isFallback);
+      } catch {
+        console.warn('⚠️ Fiyat bilgisi alınamadı');
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Bilinmeyen hata';
       console.error('❌ [Wallet] Hata:', msg);
@@ -43,6 +62,15 @@ export default function WalletScreen() {
     try {
       const bal = await getMonBalance(address);
       setBalance(bal);
+
+      // Fiyatı da güncelle
+      try {
+        const { monAmount, priceData } = await calculateMonForTRY(50);
+        setMonForFiftyTL(monAmount);
+        setPriceIsFallback(priceData.isFallback);
+      } catch {
+        // sessizce geç
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Bakiye alınamadı';
       Alert.alert('Hata', msg);
@@ -57,6 +85,50 @@ export default function WalletScreen() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [address]);
+
+  /** Cüzdan bakiyesini Nema havuzuna yatır */
+  const handleDeposit = useCallback(async () => {
+    const walletBal = parseFloat(balance ?? '0');
+    if (walletBal <= 0) {
+      Alert.alert('Yetersiz Bakiye', 'Cüzdanınızda yatırılacak MON yok.');
+      return;
+    }
+    setDepositing(true);
+    try {
+      const result = await depositToYieldPool(walletBal);
+      if (result.success) {
+        setYieldBalance((prev) => prev + result.amount);
+        setBalance('0');
+        Alert.alert('Başarılı ✅', `${result.amount.toFixed(4)} MON Nema havuzuna yatırıldı.`);
+      }
+    } catch {
+      Alert.alert('Hata', 'Nema\'ya yatırma işlemi başarısız oldu.');
+    } finally {
+      setDepositing(false);
+    }
+  }, [balance]);
+
+  /** Nema havuzundan cüzdana çek */
+  const handleWithdraw = useCallback(async () => {
+    if (yieldBalance <= 0) {
+      Alert.alert('Yetersiz Bakiye', 'Nema havuzunda çekilecek MON yok.');
+      return;
+    }
+    setWithdrawing(true);
+    try {
+      const result = await withdrawFromYieldPool(yieldBalance);
+      if (result.success) {
+        const currentBal = parseFloat(balance ?? '0');
+        setBalance((currentBal + result.amount).toString());
+        setYieldBalance(0);
+        Alert.alert('Başarılı ✅', `${result.amount.toFixed(4)} MON cüzdana çekildi.`);
+      }
+    } catch {
+      Alert.alert('Hata', 'Nema\'dan çekme işlemi başarısız oldu.');
+    } finally {
+      setWithdrawing(false);
+    }
+  }, [yieldBalance, balance]);
 
   useEffect(() => {
     initWallet();
@@ -104,6 +176,76 @@ export default function WalletScreen() {
           {parseFloat(balance ?? '0').toFixed(4)}
         </Text>
         <Text style={styles.balanceCurrency}>MON</Text>
+      </View>
+
+      {/* İstanbulkart Dolum Bilgisi */}
+      <View style={styles.priceCard}>
+        <Text style={styles.priceIcon}>🚇</Text>
+        <View style={styles.priceContent}>
+          <Text style={styles.priceTitle}>İstanbulkart Dolum (50 TL)</Text>
+          <Text style={styles.priceValue}>
+            = {monForFiftyTL != null ? monForFiftyTL.toFixed(4) : '—'} MON
+          </Text>
+        </View>
+        {priceIsFallback && (
+          <View style={styles.fallbackBadge}>
+            <Text style={styles.fallbackText}>Tahmini</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Nema Havuz Bakiyesi */}
+      <View style={styles.yieldCard}>
+        <View style={styles.yieldHeader}>
+          <Text style={styles.yieldIcon}>🌱</Text>
+          <Text style={styles.yieldTitle}>Nema Havuzu</Text>
+        </View>
+        <Text style={styles.yieldBalance}>{yieldBalance.toFixed(4)} MON</Text>
+        <View style={styles.yieldBar}>
+          <View
+            style={[
+              styles.yieldBarFill,
+              {
+                width:
+                  yieldBalance > 0
+                    ? `${Math.min((yieldBalance / (yieldBalance + parseFloat(balance ?? '0'))) * 100, 100)}%`
+                    : '0%',
+              },
+            ]}
+          />
+        </View>
+        <Text style={styles.yieldHint}>
+          Boşta duran MON'unuzu Nema havuzuna yatırarak getiri kazanın
+        </Text>
+      </View>
+
+      {/* Nema Butonları */}
+      <View style={styles.yieldButtons}>
+        <TouchableOpacity
+          style={[styles.yieldButton, styles.depositButton]}
+          onPress={handleDeposit}
+          disabled={depositing || withdrawing}
+          activeOpacity={0.7}
+        >
+          {depositing ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.yieldButtonText}>📥  Parayı Nema'ya Yatır</Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.yieldButton, styles.withdrawButton]}
+          onPress={handleWithdraw}
+          disabled={depositing || withdrawing}
+          activeOpacity={0.7}
+        >
+          {withdrawing ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.yieldButtonText}>📤  Nema'dan Çek</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Address Card */}
@@ -214,7 +356,7 @@ const styles = StyleSheet.create({
   /* Balance Card */
   balanceCard: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: 24,
   },
   balanceLabel: {
     color: '#666',
@@ -233,6 +375,121 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     marginTop: 4,
+  },
+  /* İstanbulkart Price Card */
+  priceCard: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#13131A',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#1E1E2A',
+    marginBottom: 16,
+  },
+  priceIcon: {
+    fontSize: 28,
+    marginRight: 12,
+  },
+  priceContent: {
+    flex: 1,
+  },
+  priceTitle: {
+    color: '#AAA',
+    fontSize: 13,
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  priceValue: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  fallbackBadge: {
+    backgroundColor: 'rgba(251,191,36,0.15)',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  fallbackText: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  /* Yield Card */
+  yieldCard: {
+    width: '100%',
+    backgroundColor: '#13131A',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(74,222,128,0.2)',
+    marginBottom: 12,
+  },
+  yieldHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  yieldIcon: {
+    fontSize: 20,
+    marginRight: 8,
+  },
+  yieldTitle: {
+    color: '#4ADE80',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  yieldBalance: {
+    color: '#FFFFFF',
+    fontSize: 32,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  yieldBar: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#1E1E2A',
+    borderRadius: 3,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  yieldBarFill: {
+    height: '100%',
+    backgroundColor: '#4ADE80',
+    borderRadius: 3,
+  },
+  yieldHint: {
+    color: '#666',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  /* Yield Buttons */
+  yieldButtons: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  yieldButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 50,
+  },
+  depositButton: {
+    backgroundColor: '#16A34A',
+  },
+  withdrawButton: {
+    backgroundColor: '#DC2626',
+  },
+  yieldButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   /* Address Card */
   addressCard: {
