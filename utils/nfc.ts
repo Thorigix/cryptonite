@@ -25,6 +25,18 @@ export async function isNfcSupported(): Promise<boolean> {
 }
 
 /**
+ * NFC'nin cihazda açık olup olmadığını kontrol et (ayarlardan kapatılmış olabilir)
+ */
+export async function isNfcEnabled(): Promise<boolean> {
+	try {
+		await initNfc();
+		return await NfcManager.isEnabled();
+	} catch {
+		return false;
+	}
+}
+
+/**
  * NFC Manager'ı başlat (bir kere çalıştırılır)
  */
 export async function initNfc(): Promise<boolean> {

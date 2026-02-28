@@ -1,3 +1,4 @@
+import { useMainWallet } from '@/contexts/MainWalletContext';
 import { depositToYieldPool, getMonBalance, withdrawFromYieldPool } from '@/utils/monad';
 import type { PriceData } from '@/utils/price';
 import { calculateMonForTRY } from '@/utils/price';
@@ -16,6 +17,7 @@ import {
 import type { Address } from 'viem';
 
 export default function WalletScreen() {
+  const { mainWalletAddress } = useMainWallet();
   const [address, setAddress] = useState<Address | null>(null);
   const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -159,6 +161,28 @@ export default function WalletScreen() {
       contentContainerStyle={styles.container}
       showsVerticalScrollIndicator={false}
     >
+      {/* Ana Cüzdan (MetaMask) Kartı */}
+      {mainWalletAddress ? (
+        <View style={styles.mainWalletCard}>
+          <View style={styles.mainWalletRow}>
+            <Text style={styles.mainWalletIcon}>🦊</Text>
+            <View style={styles.mainWalletInfo}>
+              <Text style={styles.mainWalletLabel}>Ana Cüzdan (MetaMask)</Text>
+              <Text style={styles.mainWalletAddr}>
+                {shortenAddress(mainWalletAddress)}
+              </Text>
+            </View>
+            <View style={styles.mainWalletStatusDot} />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.mainWalletCardDisconnected}>
+          <Text style={styles.mainWalletDisconnectedText}>
+            Ana cüzdan bağlı değil — Payment sekmesinden bağlayın
+          </Text>
+        </View>
+      )}
+
       {/* Network Badge */}
       <View style={styles.networkBadge}>
         <View style={styles.networkDot} />
@@ -324,6 +348,63 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 40,
+  },
+
+  /* Main Wallet Card */
+  mainWalletCard: {
+    width: '100%',
+    backgroundColor: '#13131A',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(246,133,27,0.3)',
+    marginBottom: 16,
+  },
+  mainWalletRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  mainWalletIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  mainWalletInfo: {
+    flex: 1,
+  },
+  mainWalletLabel: {
+    color: '#888',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  mainWalletAddr: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+  },
+  mainWalletStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4ADE80',
+  },
+  mainWalletCardDisconnected: {
+    width: '100%',
+    backgroundColor: 'rgba(255,107,107,0.05)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,107,0.1)',
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  mainWalletDisconnectedText: {
+    color: '#666',
+    fontSize: 12,
+    textAlign: 'center',
   },
 
   /* Loading */

@@ -1,9 +1,11 @@
 import { useMainWallet } from '@/contexts/MainWalletContext';
+import { useNfcStatus } from '@/hooks/useNfcStatus';
 import { withdrawFromYieldPool } from '@/utils/monad';
-import { isNfcSupported, startNfcBroadcast, startNfcRead, stopNfc } from '@/utils/nfc';
+import { startNfcBroadcast, startNfcRead, stopNfc } from '@/utils/nfc';
 import type { PaymentStep } from '@/utils/payment';
 import { executePayment } from '@/utils/payment';
 import { getPrivateKey } from '@/utils/wallet';
+import { useWeb3Modal } from '@web3modal/wagmi-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -21,16 +23,27 @@ import {
 import 'react-native-get-random-values';
 import QRCode from 'react-native-qrcode-svg';
 import type { Address } from 'viem';
+import { useAccount, useDisconnect } from 'wagmi';
 
 // ─── Types ───
 type PaymentMode = 'idle' | 'receive' | 'send' | 'processing' | 'done';
 
 export default function PaymentScreen() {
 	const { mainWalletAddress, connectMainWallet, disconnectMainWallet } = useMainWallet();
+	const { nfcEnabled, nfcSupported, openNfcSettings } = useNfcStatus();
+	const { open } = useWeb3Modal();
+	const { address: wagmiAddress, isConnected } = useAccount();
+	const { disconnect: wagmiDisconnect } = useDisconnect();
+
+	// wagmi hesabı değiştiğinde MainWalletContext'i güncelle
+	useEffect(() => {
+		if (isConnected && wagmiAddress) {
+			connectMainWallet(wagmiAddress as Address);
+		}
+	}, [isConnected, wagmiAddress, connectMainWallet]);
 
 	// ─── State ───
 	const [mode, setMode] = useState<PaymentMode>('idle');
-	const [nfcAvailable, setNfcAvailable] = useState(false);
 	const [nfcBroadcasting, setNfcBroadcasting] = useState(false);
 	const [targetAddress, setTargetAddress] = useState<Address | null>(null);
 	const [paymentSteps, setPaymentSteps] = useState<PaymentStep[]>([]);
@@ -43,19 +56,21 @@ export default function PaymentScreen() {
 	// Nema (Yield) bakiyesi - basit mock state
 	const [yieldBalance, setYieldBalance] = useState(0);
 
-	// NFC desteğini kontrol et
-	useEffect(() => {
-		(async () => {
-			const supported = await isNfcSupported();
-			setNfcAvailable(supported);
-		})();
-	}, []);
-
 	// ─── Ana Cüzdan Bağlantısı ───
 	const handleConnectWallet = useCallback(() => {
 		setShowConnectModal(true);
 		setAddressInput(mainWalletAddress ?? '');
 	}, [mainWalletAddress]);
+
+	const handleMetaMaskConnect = useCallback(async () => {
+		try {
+			setShowConnectModal(false);
+			await open();
+		} catch (e) {
+			console.warn('⚠️ [Web3Modal] Bağlantı başarısız:', e);
+			Alert.alert('Hata', 'Cüzdan bağlantısı kurulamadı. Manuel adres girin.');
+		}
+	}, [open]);
 
 	const handleSaveAddress = useCallback(async () => {
 		const addr = addressInput.trim();
@@ -69,9 +84,10 @@ export default function PaymentScreen() {
 	}, [addressInput, connectMainWallet]);
 
 	const handleDisconnect = useCallback(async () => {
+		wagmiDisconnect();
 		await disconnectMainWallet();
 		setShowConnectModal(false);
-	}, [disconnectMainWallet]);
+	}, [disconnectMainWallet, wagmiDisconnect]);
 
 	// ─── Ödeme Al (Receive) ───
 	const handleReceive = useCallback(async () => {
@@ -82,7 +98,7 @@ export default function PaymentScreen() {
 		setMode('receive');
 
 		// NFC HCE'yi arka planda dene
-		if (nfcAvailable) {
+		if (nfcEnabled) {
 			setNfcBroadcasting(true);
 			const success = await startNfcBroadcast(mainWalletAddress);
 			if (!success) {
@@ -91,7 +107,7 @@ export default function PaymentScreen() {
 			}
 		}
 		// Her durumda QR Code ekranda gösteriliyor
-	}, [mainWalletAddress, nfcAvailable]);
+	}, [mainWalletAddress, nfcEnabled]);
 
 	const handleStopReceive = useCallback(async () => {
 		await stopNfc();
@@ -110,7 +126,7 @@ export default function PaymentScreen() {
 		scanProcessedRef.current = false;
 
 		// Önce NFC okumayı dene
-		if (nfcAvailable) {
+		if (nfcEnabled) {
 			const addr = await startNfcRead();
 			if (addr && /^0x[a-fA-F0-9]{40}$/.test(addr)) {
 				Vibration.vibrate(200);
@@ -130,7 +146,7 @@ export default function PaymentScreen() {
 			}
 		}
 		setShowScanner(true);
-	}, [mainWalletAddress, nfcAvailable, permission, requestPermission]);
+	}, [mainWalletAddress, nfcEnabled, permission, requestPermission]);
 
 	// QR Code okunduğunda
 	const handleBarCodeScanned = useCallback(
@@ -249,10 +265,15 @@ export default function PaymentScreen() {
 
 			{/* NFC Durum Badge */}
 			<View style={styles.nfcBadge}>
-				<View style={[styles.nfcDot, nfcAvailable ? styles.nfcDotActive : styles.nfcDotInactive]} />
+				<View style={[styles.nfcDot, nfcEnabled ? styles.nfcDotActive : styles.nfcDotInactive]} />
 				<Text style={styles.nfcText}>
-					NFC: {nfcAvailable ? 'Aktif' : 'Mevcut Değil'} • QR: Aktif
+					NFC: {nfcEnabled ? 'Aktif' : nfcSupported ? 'Kapalı' : 'Mevcut Değil'} • QR: Aktif
 				</Text>
+				{nfcSupported && !nfcEnabled && (
+					<TouchableOpacity style={styles.nfcSettingsButton} onPress={openNfcSettings} activeOpacity={0.7}>
+						<Text style={styles.nfcSettingsText}>NFC'yi Aç</Text>
+					</TouchableOpacity>
+				)}
 			</View>
 
 			{/* ─── IDLE: Ödeme Butonları ─── */}
@@ -374,8 +395,25 @@ export default function PaymentScreen() {
 				<View style={styles.modalOverlay}>
 					<View style={styles.modalContent}>
 						<Text style={styles.modalTitle}>Ana Cüzdan Bağla</Text>
-						<Text style={styles.modalSubtitle}>Metamask adresinizi girin</Text>
+						<Text style={styles.modalSubtitle}>MetaMask ile veya manuel adres girin</Text>
 
+						{/* Cüzdan Bağla (Web3Modal) */}
+						<TouchableOpacity
+							style={styles.metaMaskButton}
+							onPress={handleMetaMaskConnect}
+							activeOpacity={0.7}
+						>
+							<Text style={styles.metaMaskButtonIcon}>🦊</Text>
+							<Text style={styles.metaMaskButtonText}>Cüzdan Bağla</Text>
+						</TouchableOpacity>
+
+						<View style={styles.modalDivider}>
+							<View style={styles.modalDividerLine} />
+							<Text style={styles.modalDividerText}>veya</Text>
+							<View style={styles.modalDividerLine} />
+						</View>
+
+						{/* Manuel Adres Girişi */}
 						<TextInput
 							style={styles.addressInputField}
 							placeholder="0x..."
@@ -387,7 +425,7 @@ export default function PaymentScreen() {
 						/>
 
 						<TouchableOpacity style={styles.modalSaveButton} onPress={handleSaveAddress} activeOpacity={0.7}>
-							<Text style={styles.modalSaveButtonText}>Bağlan</Text>
+							<Text style={styles.modalSaveButtonText}>Manuel Bağlan</Text>
 						</TouchableOpacity>
 
 						{mainWalletAddress && (
@@ -540,6 +578,18 @@ const styles = StyleSheet.create({
 		color: '#666',
 		fontSize: 12,
 		fontWeight: '500',
+	},
+	nfcSettingsButton: {
+		backgroundColor: 'rgba(131,110,249,0.15)',
+		paddingVertical: 4,
+		paddingHorizontal: 10,
+		borderRadius: 8,
+		marginLeft: 4,
+	},
+	nfcSettingsText: {
+		color: '#836EF9',
+		fontSize: 11,
+		fontWeight: '700',
 	},
 
 	// Action Buttons
@@ -773,15 +823,51 @@ const styles = StyleSheet.create({
 		padding: 14,
 		marginBottom: 16,
 	},
-	modalSaveButton: {
-		backgroundColor: '#836EF9',
+	metaMaskButton: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+		gap: 10,
+		backgroundColor: '#F6851B',
 		borderRadius: 14,
+		paddingVertical: 15,
+		marginBottom: 16,
+	},
+	metaMaskButtonIcon: {
+		fontSize: 20,
+	},
+	metaMaskButtonText: {
+		color: '#FFFFFF',
+		fontSize: 16,
+		fontWeight: '700',
+	},
+	modalDivider: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 12,
+		marginBottom: 16,
+	},
+	modalDividerLine: {
+		flex: 1,
+		height: 1,
+		backgroundColor: '#2A2A3E',
+	},
+	modalDividerText: {
+		color: '#555',
+		fontSize: 12,
+		fontWeight: '600',
+	},
+	modalSaveButton: {
+		backgroundColor: '#1A1A26',
+		borderRadius: 14,
+		borderWidth: 1,
+		borderColor: '#836EF9',
 		paddingVertical: 15,
 		alignItems: 'center',
 		marginBottom: 10,
 	},
 	modalSaveButtonText: {
-		color: '#FFFFFF',
+		color: '#836EF9',
 		fontSize: 16,
 		fontWeight: '700',
 	},
