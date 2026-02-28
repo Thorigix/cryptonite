@@ -1,4 +1,5 @@
 import { depositToYieldPool, getMonBalance, withdrawFromYieldPool } from '@/utils/monad';
+import type { PriceData } from '@/utils/price';
 import { calculateMonForTRY } from '@/utils/price';
 import { getOrCreateWallet } from '@/utils/wallet';
 import * as Clipboard from 'expo-clipboard';
@@ -23,13 +24,23 @@ export default function WalletScreen() {
   const [copied, setCopied] = useState(false);
 
   // Fiyat state'leri
+  const [priceData, setPriceData] = useState<PriceData | null>(null);
   const [monForFiftyTL, setMonForFiftyTL] = useState<number | null>(null);
-  const [priceIsFallback, setPriceIsFallback] = useState(false);
 
   // Nema (Yield) state'leri
   const [yieldBalance, setYieldBalance] = useState(0);
   const [depositing, setDepositing] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
+
+  const fetchPrice = useCallback(async () => {
+    try {
+      const { monAmount, priceData: pd } = await calculateMonForTRY(50);
+      setMonForFiftyTL(monAmount);
+      setPriceData(pd);
+    } catch {
+      console.warn('[Price] Fiyat bilgisi alınamadı');
+    }
+  }, []);
 
   const initWallet = useCallback(async () => {
     try {
@@ -38,23 +49,15 @@ export default function WalletScreen() {
       setAddress(wallet.address);
       const bal = await getMonBalance(wallet.address);
       setBalance(bal);
-
-      // Fiyat bilgisini çek
-      try {
-        const { monAmount, priceData } = await calculateMonForTRY(50);
-        setMonForFiftyTL(monAmount);
-        setPriceIsFallback(priceData.isFallback);
-      } catch {
-        console.warn('⚠️ Fiyat bilgisi alınamadı');
-      }
+      await fetchPrice();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Bilinmeyen hata';
-      console.error('❌ [Wallet] Hata:', msg);
+      console.error('[Wallet] Hata:', msg);
       setError(msg);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchPrice]);
 
   const refreshBalance = useCallback(async () => {
     if (!address) return;
@@ -62,22 +65,14 @@ export default function WalletScreen() {
     try {
       const bal = await getMonBalance(address);
       setBalance(bal);
-
-      // Fiyatı da güncelle
-      try {
-        const { monAmount, priceData } = await calculateMonForTRY(50);
-        setMonForFiftyTL(monAmount);
-        setPriceIsFallback(priceData.isFallback);
-      } catch {
-        // sessizce geç
-      }
+      await fetchPrice();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Bakiye alınamadı';
       Alert.alert('Hata', msg);
     } finally {
       setRefreshing(false);
     }
-  }, [address]);
+  }, [address, fetchPrice]);
 
   const copyAddress = useCallback(async () => {
     if (!address) return;
@@ -86,7 +81,6 @@ export default function WalletScreen() {
     setTimeout(() => setCopied(false), 2000);
   }, [address]);
 
-  /** Cüzdan bakiyesini Nema havuzuna yatır */
   const handleDeposit = useCallback(async () => {
     const walletBal = parseFloat(balance ?? '0');
     if (walletBal <= 0) {
@@ -99,16 +93,15 @@ export default function WalletScreen() {
       if (result.success) {
         setYieldBalance((prev) => prev + result.amount);
         setBalance('0');
-        Alert.alert('Başarılı ✅', `${result.amount.toFixed(4)} MON Nema havuzuna yatırıldı.`);
+        Alert.alert('Başarılı', `${result.amount.toFixed(4)} MON Nema havuzuna yatırıldı.`);
       }
     } catch {
-      Alert.alert('Hata', 'Nema\'ya yatırma işlemi başarısız oldu.');
+      Alert.alert('Hata', "Nema'ya yatırma işlemi başarısız oldu.");
     } finally {
       setDepositing(false);
     }
   }, [balance]);
 
-  /** Nema havuzundan cüzdana çek */
   const handleWithdraw = useCallback(async () => {
     if (yieldBalance <= 0) {
       Alert.alert('Yetersiz Bakiye', 'Nema havuzunda çekilecek MON yok.');
@@ -121,10 +114,10 @@ export default function WalletScreen() {
         const currentBal = parseFloat(balance ?? '0');
         setBalance((currentBal + result.amount).toString());
         setYieldBalance(0);
-        Alert.alert('Başarılı ✅', `${result.amount.toFixed(4)} MON cüzdana çekildi.`);
+        Alert.alert('Başarılı', `${result.amount.toFixed(4)} MON cüzdana çekildi.`);
       }
     } catch {
-      Alert.alert('Hata', 'Nema\'dan çekme işlemi başarısız oldu.');
+      Alert.alert('Hata', "Nema'dan çekme işlemi başarısız oldu.");
     } finally {
       setWithdrawing(false);
     }
@@ -134,8 +127,12 @@ export default function WalletScreen() {
     initWallet();
   }, [initWallet]);
 
-  const shortenAddress = (addr: string) =>
-    `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  const shortenAddress = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+
+  /** MON bakiyesinin USD ve TRY karşılığını hesapla */
+  const balanceNum = parseFloat(balance ?? '0');
+  const balanceUSD = priceData ? (balanceNum * priceData.monUSD).toFixed(2) : null;
+  const balanceTRY = priceData ? (balanceNum * priceData.monTRY).toFixed(2) : null;
 
   if (loading) {
     return (
@@ -149,7 +146,6 @@ export default function WalletScreen() {
   if (error) {
     return (
       <View style={styles.container}>
-        <Text style={styles.errorEmoji}>⚠️</Text>
         <Text style={styles.errorText}>{error}</Text>
         <TouchableOpacity style={styles.retryButton} onPress={initWallet}>
           <Text style={styles.retryButtonText}>Tekrar Dene</Text>
@@ -172,33 +168,53 @@ export default function WalletScreen() {
       {/* Balance Card */}
       <View style={styles.balanceCard}>
         <Text style={styles.balanceLabel}>MON Bakiye</Text>
-        <Text style={styles.balanceValue}>
-          {parseFloat(balance ?? '0').toFixed(4)}
-        </Text>
+        <Text style={styles.balanceValue}>{balanceNum.toFixed(4)}</Text>
         <Text style={styles.balanceCurrency}>MON</Text>
-      </View>
 
-      {/* İstanbulkart Dolum Bilgisi */}
-      <View style={styles.priceCard}>
-        <Text style={styles.priceIcon}>🚇</Text>
-        <View style={styles.priceContent}>
-          <Text style={styles.priceTitle}>İstanbulkart Dolum (50 TL)</Text>
-          <Text style={styles.priceValue}>
-            = {monForFiftyTL != null ? monForFiftyTL.toFixed(4) : '—'} MON
-          </Text>
-        </View>
-        {priceIsFallback && (
-          <View style={styles.fallbackBadge}>
-            <Text style={styles.fallbackText}>Tahmini</Text>
+        {/* Fiat karşılıkları */}
+        {(balanceUSD !== null || balanceTRY !== null) && (
+          <View style={styles.fiatRow}>
+            {balanceUSD !== null && (
+              <View style={styles.fiatChip}>
+                <Text style={styles.fiatLabel}>USD</Text>
+                <Text style={styles.fiatValue}>${balanceUSD}</Text>
+              </View>
+            )}
+            {balanceTRY !== null && (
+              <View style={styles.fiatChip}>
+                <Text style={styles.fiatLabel}>TRY</Text>
+                <Text style={styles.fiatValue}>₺{balanceTRY}</Text>
+              </View>
+            )}
+            {priceData?.isFallback && (
+              <View style={styles.fiatChipMuted}>
+                <Text style={styles.fiatMutedText}>Tahmini</Text>
+              </View>
+            )}
           </View>
         )}
       </View>
 
-      {/* Nema Havuz Bakiyesi */}
+      {/* Istanbul Kart Dolum Bilgisi */}
+      <View style={styles.priceCard}>
+        <View style={styles.priceMeta}>
+          <Text style={styles.priceTitle}>Istanbulkart Dolum</Text>
+          <Text style={styles.priceSubtitle}>50 TL</Text>
+        </View>
+        <View style={styles.priceDivider} />
+        <View style={styles.priceMeta}>
+          <Text style={styles.priceSubtitle}>MON karşılığı</Text>
+          <Text style={styles.priceAmount}>
+            {monForFiftyTL != null ? monForFiftyTL.toFixed(4) : '—'} MON
+          </Text>
+        </View>
+      </View>
+
+      {/* Nema Havuz Kartı */}
       <View style={styles.yieldCard}>
         <View style={styles.yieldHeader}>
-          <Text style={styles.yieldIcon}>🌱</Text>
           <Text style={styles.yieldTitle}>Nema Havuzu</Text>
+          <Text style={styles.yieldBadge}>MOCK</Text>
         </View>
         <Text style={styles.yieldBalance}>{yieldBalance.toFixed(4)} MON</Text>
         <View style={styles.yieldBar}>
@@ -208,7 +224,10 @@ export default function WalletScreen() {
               {
                 width:
                   yieldBalance > 0
-                    ? `${Math.min((yieldBalance / (yieldBalance + parseFloat(balance ?? '0'))) * 100, 100)}%`
+                    ? `${Math.min(
+                      (yieldBalance / (yieldBalance + balanceNum)) * 100,
+                      100
+                    )}%`
                     : '0%',
               },
             ]}
@@ -217,35 +236,41 @@ export default function WalletScreen() {
         <Text style={styles.yieldHint}>
           Boşta duran MON'unuzu Nema havuzuna yatırarak getiri kazanın
         </Text>
-      </View>
 
-      {/* Nema Butonları */}
-      <View style={styles.yieldButtons}>
-        <TouchableOpacity
-          style={[styles.yieldButton, styles.depositButton]}
-          onPress={handleDeposit}
-          disabled={depositing || withdrawing}
-          activeOpacity={0.7}
-        >
-          {depositing ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.yieldButtonText}>📥  Parayı Nema'ya Yatır</Text>
-          )}
-        </TouchableOpacity>
+        {/* Nema Butonları */}
+        <View style={styles.yieldButtons}>
+          <TouchableOpacity
+            style={[styles.yieldButton, (depositing || withdrawing) && styles.yieldButtonDisabled]}
+            onPress={handleDeposit}
+            disabled={depositing || withdrawing}
+            activeOpacity={0.7}
+          >
+            {depositing ? (
+              <ActivityIndicator size="small" color="#836EF9" />
+            ) : (
+              <>
+                <Text style={styles.yieldButtonIcon}>↓</Text>
+                <Text style={styles.yieldButtonText}>Nema'ya Yatır</Text>
+              </>
+            )}
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.yieldButton, styles.withdrawButton]}
-          onPress={handleWithdraw}
-          disabled={depositing || withdrawing}
-          activeOpacity={0.7}
-        >
-          {withdrawing ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.yieldButtonText}>📤  Nema'dan Çek</Text>
-          )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.yieldButton, (depositing || withdrawing) && styles.yieldButtonDisabled]}
+            onPress={handleWithdraw}
+            disabled={depositing || withdrawing}
+            activeOpacity={0.7}
+          >
+            {withdrawing ? (
+              <ActivityIndicator size="small" color="#836EF9" />
+            ) : (
+              <>
+                <Text style={styles.yieldButtonIcon}>↑</Text>
+                <Text style={styles.yieldButtonText}>Nema'dan Çek</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Address Card */}
@@ -256,15 +281,12 @@ export default function WalletScreen() {
       >
         <View style={styles.addressHeader}>
           <Text style={styles.addressLabel}>Cüzdan Adresi</Text>
-          <Text style={styles.copyIcon}>{copied ? '✅' : '📋'}</Text>
+          <Text style={styles.copyHint}>{copied ? 'Kopyalandı' : 'Dokun & Kopyala'}</Text>
         </View>
         <Text style={styles.addressShort}>
           {address ? shortenAddress(address) : '—'}
         </Text>
         <Text style={styles.addressFull}>{address}</Text>
-        <Text style={styles.copyHint}>
-          {copied ? 'Kopyalandı!' : 'Kopyalamak için dokun'}
-        </Text>
       </TouchableOpacity>
 
       {/* Refresh Button */}
@@ -275,15 +297,15 @@ export default function WalletScreen() {
         activeOpacity={0.7}
       >
         {refreshing ? (
-          <ActivityIndicator size="small" color="#fff" />
+          <ActivityIndicator size="small" color="#836EF9" />
         ) : (
-          <Text style={styles.refreshButtonText}>🔄  Bakiyeyi Yenile</Text>
+          <Text style={styles.refreshButtonText}>Bakiyeyi Yenile</Text>
         )}
       </TouchableOpacity>
 
       {/* Info */}
       <View style={styles.infoCard}>
-        <Text style={styles.infoTitle}>ℹ️  Burner Wallet</Text>
+        <Text style={styles.infoTitle}>Burner Wallet</Text>
         <Text style={styles.infoText}>
           Bu geçici bir cüzdandır. Adresinize test MON göndermek için yukarıdaki
           adrese dokunarak kopyalayın ve Monad Faucet'ten token talep edin.
@@ -303,17 +325,15 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingBottom: 40,
   },
+
   /* Loading */
   loadingText: {
     color: '#888',
     marginTop: 16,
     fontSize: 15,
   },
+
   /* Error */
-  errorEmoji: {
-    fontSize: 48,
-    marginBottom: 12,
-  },
   errorText: {
     color: '#FF6B6B',
     fontSize: 15,
@@ -331,19 +351,20 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 15,
   },
+
   /* Network Badge */
   networkBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(131,110,249,0.15)',
+    backgroundColor: 'rgba(131,110,249,0.12)',
     paddingVertical: 6,
     paddingHorizontal: 14,
     borderRadius: 20,
     marginBottom: 32,
   },
   networkDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
     backgroundColor: '#4ADE80',
     marginRight: 8,
@@ -353,70 +374,114 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+
   /* Balance Card */
   balanceCard: {
     alignItems: 'center',
     marginBottom: 24,
   },
   balanceLabel: {
-    color: '#666',
-    fontSize: 14,
+    color: '#555',
+    fontSize: 13,
     fontWeight: '500',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
     marginBottom: 8,
   },
   balanceValue: {
     color: '#FFFFFF',
-    fontSize: 48,
+    fontSize: 52,
     fontWeight: '800',
-    letterSpacing: -1,
+    letterSpacing: -1.5,
   },
   balanceCurrency: {
     color: '#836EF9',
     fontSize: 18,
     fontWeight: '700',
-    marginTop: 4,
+    marginTop: 2,
+    marginBottom: 16,
   },
-  /* İstanbulkart Price Card */
+  /* Fiat row */
+  fiatRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  fiatChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#13131A',
+    borderWidth: 1,
+    borderColor: '#1E1E2A',
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  fiatLabel: {
+    color: '#555',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  fiatValue: {
+    color: '#CCC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fiatChipMuted: {
+    backgroundColor: 'rgba(251,191,36,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(251,191,36,0.2)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  fiatMutedText: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+
+  /* Istanbulkart Price Card */
   priceCard: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#13131A',
     borderRadius: 14,
-    padding: 16,
+    padding: 18,
     borderWidth: 1,
     borderColor: '#1E1E2A',
     marginBottom: 16,
   },
-  priceIcon: {
-    fontSize: 28,
-    marginRight: 12,
-  },
-  priceContent: {
+  priceMeta: {
     flex: 1,
+    alignItems: 'center',
+  },
+  priceDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: '#1E1E2A',
+    marginHorizontal: 12,
   },
   priceTitle: {
-    color: '#AAA',
-    fontSize: 13,
+    color: '#666',
+    fontSize: 12,
     fontWeight: '500',
     marginBottom: 4,
   },
-  priceValue: {
+  priceSubtitle: {
+    color: '#888',
+    fontSize: 12,
+    marginBottom: 2,
+  },
+  priceAmount: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
   },
-  fallbackBadge: {
-    backgroundColor: 'rgba(251,191,36,0.15)',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  fallbackText: {
-    color: '#FBBF24',
-    fontSize: 11,
-    fontWeight: '600',
-  },
+
   /* Yield Card */
   yieldCard: {
     width: '100%',
@@ -424,73 +489,89 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.2)',
+    borderColor: '#1E1E2A',
     marginBottom: 12,
   },
   yieldHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 12,
   },
-  yieldIcon: {
-    fontSize: 20,
-    marginRight: 8,
-  },
   yieldTitle: {
-    color: '#4ADE80',
+    color: '#CCCCCC',
     fontSize: 15,
     fontWeight: '700',
   },
+  yieldBadge: {
+    color: '#555',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    backgroundColor: '#1A1A24',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#2A2A3A',
+  },
   yieldBalance: {
     color: '#FFFFFF',
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: '800',
-    marginBottom: 12,
+    marginBottom: 16,
   },
   yieldBar: {
     width: '100%',
-    height: 6,
+    height: 3,
     backgroundColor: '#1E1E2A',
-    borderRadius: 3,
+    borderRadius: 2,
     marginBottom: 12,
     overflow: 'hidden',
   },
   yieldBarFill: {
     height: '100%',
-    backgroundColor: '#4ADE80',
-    borderRadius: 3,
+    backgroundColor: '#836EF9',
+    borderRadius: 2,
   },
   yieldHint: {
-    color: '#666',
+    color: '#555',
     fontSize: 12,
     lineHeight: 18,
+    marginBottom: 20,
   },
+
   /* Yield Buttons */
   yieldButtons: {
-    width: '100%',
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 16,
   },
   yieldButton: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 14,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 50,
+    gap: 6,
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: '#1A1A26',
+    borderWidth: 1,
+    borderColor: '#2A2A3E',
   },
-  depositButton: {
-    backgroundColor: '#16A34A',
+  yieldButtonDisabled: {
+    opacity: 0.4,
   },
-  withdrawButton: {
-    backgroundColor: '#DC2626',
+  yieldButtonIcon: {
+    color: '#836EF9',
+    fontSize: 16,
+    fontWeight: '800',
   },
   yieldButtonText: {
-    color: '#FFFFFF',
+    color: '#CCCCCC',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
+
   /* Address Card */
   addressCard: {
     width: '100%',
@@ -508,12 +589,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   addressLabel: {
-    color: '#888',
+    color: '#666',
     fontSize: 13,
     fontWeight: '500',
+    letterSpacing: 0.5,
   },
-  copyIcon: {
-    fontSize: 18,
+  copyHint: {
+    color: '#836EF9',
+    fontSize: 12,
+    fontWeight: '600',
   },
   addressShort: {
     color: '#FFFFFF',
@@ -523,49 +607,47 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   addressFull: {
-    color: '#555',
+    color: '#444',
     fontSize: 11,
     fontFamily: 'monospace',
     lineHeight: 16,
   },
-  copyHint: {
-    color: '#836EF9',
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 12,
-    textAlign: 'center',
-  },
+
   /* Refresh Button */
   refreshButton: {
     width: '100%',
-    backgroundColor: '#836EF9',
-    paddingVertical: 16,
+    backgroundColor: '#13131A',
+    borderWidth: 1,
+    borderColor: '#836EF9',
+    paddingVertical: 15,
     borderRadius: 14,
     alignItems: 'center',
     marginBottom: 16,
   },
   refreshButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
+    color: '#836EF9',
+    fontSize: 15,
     fontWeight: '700',
   },
+
   /* Info */
   infoCard: {
     width: '100%',
-    backgroundColor: 'rgba(131,110,249,0.08)',
+    backgroundColor: 'rgba(131,110,249,0.05)',
     borderRadius: 14,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(131,110,249,0.15)',
+    borderColor: 'rgba(131,110,249,0.1)',
   },
   infoTitle: {
     color: '#836EF9',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     marginBottom: 8,
+    letterSpacing: 0.5,
   },
   infoText: {
-    color: '#777',
+    color: '#666',
     fontSize: 13,
     lineHeight: 20,
   },
