@@ -36,3 +36,20 @@ export async function getOrCreateWallet(): Promise<BurnerWallet> {
 		address: account.address,
 	};
 }
+
+/**
+ * Get just the private key from SecureStore (for payment pipeline).
+ * Returns null if no burner wallet exists.
+ */
+export async function getPrivateKey(): Promise<Hex | null> {
+	return (await SecureStore.getItemAsync(SECURE_STORE_KEY)) as Hex | null;
+}
+
+/**
+ * Delete (burn) the burner wallet's private key from SecureStore.
+ * This is irreversible — the wallet cannot be recovered after this call.
+ */
+export async function deleteWallet(): Promise<void> {
+	await SecureStore.deleteItemAsync(SECURE_STORE_KEY);
+	console.log('🔥 [Wallet] Burner cüzdan imha edildi (private key silindi)');
+}
