@@ -1,7 +1,10 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import 'fast-text-encoding';
+import 'react-native-get-random-values';
 import 'react-native-reanimated';
+import '../shim';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
